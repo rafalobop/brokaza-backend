@@ -22,19 +22,24 @@ yarn-error.log*
 /postman
 .agents/
 skills-lock.json
-docs/
+docs/*
+!docs/model-selection.md
+!docs/rate-limit-backends.md
+!docs/rls-deny-all-tables-README.md
+!docs/RUNBOOK.md
 public/
 # Archivos dinámicos de Tenants (Caché, Configuración y Sesiones)
 cache/
 sessions/
-auditoria.md
-MIGRATION_PLAN.md
-RUNBOOK.md
-EVOLUTION_DOCS.md
+/auditoria.md
+/MIGRATION_PLAN.md
+/RUNBOOK.md
+/EVOLUTION_DOCS.md
 
 # Proyectos de video generados con HyperFrames (outputs pesados, no versionar)
 videos/
 
+# Workspace separado del producto (grafo LangGraph que simula un equipo de dev; ver README)
 langgraph-tools/
 
 # Herramienta de QA local (scripts/qa) y fixtures de Excel - solo para pruebas locales
