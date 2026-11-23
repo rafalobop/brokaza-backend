@@ -9,18 +9,18 @@ import {
   BudgetMatchingStrategy,
   FeaturesMatchingStrategy
 } from '../src/utils/matcher';
-import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../src/services/ai';
+import { SearchIntent, ZoneIntentRequest } from '../src/ai';
 import { Property } from '../src/services/excel';
 
-function baseRequest(overrides: Partial<ExtractedRealEstateRequest> = {}): ExtractedRealEstateRequest {
+function baseRequest(overrides: Partial<SearchIntent> = {}): SearchIntent {
   return {
     operation: 'venta',
     property_type: 'departamento',
-    zones: [],
+    location_mentions: [],
     max_budget: null,
     currency: 'ARS',
-    bedrooms: null,
-    key_features: [],
+    bedrooms_min: null,
+    features: [],
     country: 'indiferente',
     ...overrides
   };
@@ -97,10 +97,7 @@ function zoneIntentFor(zonaIds: string | string[], zonaNombres?: string | (strin
     zone_status: 'DEFINIDA',
     zona_ids: ids,
     zona_nombres: nombres,
-    texto_ubicacion_original: 'texto de prueba',
-    dormitorios_min: null,
-    caracteristicas_claves: [],
-    operacion: 'DESCONOCIDO'
+    texto_ubicacion_original: 'texto de prueba'
   };
 }
 
@@ -109,10 +106,7 @@ function desconocidaZoneIntent(texto: string = 'barrio inexistente'): ZoneIntent
     zone_status: 'DESCONOCIDA',
     zona_ids: [],
     zona_nombres: [],
-    texto_ubicacion_original: texto,
-    dormitorios_min: null,
-    caracteristicas_claves: [],
-    operacion: 'DESCONOCIDO'
+    texto_ubicacion_original: texto
   };
 }
 
@@ -121,10 +115,7 @@ function indefinidaZoneIntent(): ZoneIntentRequest {
     zone_status: 'INDEFINIDA',
     zona_ids: [],
     zona_nombres: [],
-    texto_ubicacion_original: '',
-    dormitorios_min: null,
-    caracteristicas_claves: [],
-    operacion: 'DESCONOCIDO'
+    texto_ubicacion_original: ''
   };
 }
 
@@ -171,10 +162,10 @@ test('Matcher - ZoneMatchingStrategy: zone_status DESCONOCIDA bloquea siempre, s
   assert.strictEqual(result.isMatch, false, 'DESCONOCIDA debe ser un filtro duro: 0 matches hasta que se cure.');
 });
 
-test('Matcher - ZoneMatchingStrategy: zone_status INDEFINIDA no filtra por zona (cae al branch de request.zones vacío)', () => {
+test('Matcher - ZoneMatchingStrategy: zone_status INDEFINIDA no filtra por zona', () => {
   const strategy = new ZoneMatchingStrategy();
   const result = strategy.evaluate(
-    baseRequest(), // request.zones vacío
+    baseRequest(),
     baseProperty({ neighborhood_id: null }),
     indefinidaZoneIntent()
   );
@@ -229,14 +220,14 @@ test('Matcher - ZoneMatchingStrategy (KAN-92): si no se pudo resolver el nombre 
 // --- 5. Bedrooms ---
 test('Matcher - BedroomsMatchingStrategy: matchea con la misma cantidad de dormitorios', () => {
   const strategy = new BedroomsMatchingStrategy();
-  const result = strategy.evaluate(baseRequest({ bedrooms: 2 }), baseProperty({ bedrooms: 2 }));
+  const result = strategy.evaluate(baseRequest({ bedrooms_min: 2 }), baseProperty({ bedrooms: 2 }));
   assert.strictEqual(result.isMatch, true);
   assert.strictEqual(result.scoreDeduction, 0);
 });
 
 test('Matcher - BedroomsMatchingStrategy: rechaza cuando faltan dormitorios', () => {
   const strategy = new BedroomsMatchingStrategy();
-  const result = strategy.evaluate(baseRequest({ bedrooms: 3 }), baseProperty({ bedrooms: 2 }));
+  const result = strategy.evaluate(baseRequest({ bedrooms_min: 3 }), baseProperty({ bedrooms: 2 }));
   assert.strictEqual(result.isMatch, false);
 });
 
@@ -289,7 +280,7 @@ test('Matcher - BudgetMatchingStrategy: trata price negativo igual que price=0 (
 test('Matcher - FeaturesMatchingStrategy: matchea sin penalización cuando todas las características coinciden', () => {
   const strategy = new FeaturesMatchingStrategy();
   const result = strategy.evaluate(
-    baseRequest({ key_features: ['cochera'] }),
+    baseRequest({ features: ['cochera'] }),
     baseProperty({ features: 'Cuenta con cochera y balcón' })
   );
   assert.strictEqual(result.isMatch, true);
@@ -299,9 +290,64 @@ test('Matcher - FeaturesMatchingStrategy: matchea sin penalización cuando todas
 test('Matcher - FeaturesMatchingStrategy: penaliza fuertemente el score cuando ninguna característica coincide', () => {
   const strategy = new FeaturesMatchingStrategy();
   const result = strategy.evaluate(
-    baseRequest({ key_features: ['pileta'] }),
+    baseRequest({ features: ['pileta'] }),
     baseProperty({ features: 'Living amplio con balcón al frente' })
   );
   assert.strictEqual(result.isMatch, true);
   assert.ok(result.scoreDeduction > 0, 'Debe penalizar el score aunque no descarte el match.');
+});
+
+// --- BE-24 (EP-07): crédito semántico sobre características "faltantes" por palabra clave ---
+
+test('Matcher - FeaturesMatchingStrategy (BE-24): con similitud semántica alta, atenúa (no elimina) la deducción por características faltantes', () => {
+  const strategy = new FeaturesMatchingStrategy();
+  const requestEmbedding = [1, 0];
+  const propertyEmbedding = [1, 0]; // similitud 1.0 (idéntico)
+
+  const sinCredito = strategy.evaluate(
+    baseRequest({ features: ['parrilla'] }),
+    baseProperty({ features: 'Living amplio con balcón al frente' })
+  );
+  const conCredito = strategy.evaluate(
+    baseRequest({ features: ['parrilla'] }),
+    baseProperty({ features: 'Living amplio con balcón al frente', features_embedding: propertyEmbedding }),
+    undefined,
+    requestEmbedding
+  );
+
+  assert.strictEqual(conCredito.isMatch, true);
+  assert.ok(conCredito.scoreDeduction < sinCredito.scoreDeduction, 'La deducción con crédito semántico debe ser menor que sin él.');
+  assert.ok(conCredito.scoreDeduction > 0, 'Nunca debe anular la deducción del todo (no se sabe CUÁL feature matchea).');
+  assert.ok(conCredito.reason?.includes('semántic'), 'El motivo debe mencionar la coincidencia semántica.');
+});
+
+test('Matcher - FeaturesMatchingStrategy (BE-24): con similitud semántica baja (< 0.5), no aplica ningún crédito', () => {
+  const strategy = new FeaturesMatchingStrategy();
+  const requestEmbedding = [1, 0];
+  const propertyEmbedding = [0, 1]; // similitud 0 (ortogonal)
+
+  const sinEmbeddings = strategy.evaluate(
+    baseRequest({ features: ['parrilla'] }),
+    baseProperty({ features: 'Living amplio con balcón al frente' })
+  );
+  const conEmbeddingsBajos = strategy.evaluate(
+    baseRequest({ features: ['parrilla'] }),
+    baseProperty({ features: 'Living amplio con balcón al frente', features_embedding: propertyEmbedding }),
+    undefined,
+    requestEmbedding
+  );
+
+  assert.strictEqual(conEmbeddingsBajos.scoreDeduction, sinEmbeddings.scoreDeduction, 'Sin similitud suficiente, la deducción debe ser idéntica a no tener embeddings.');
+});
+
+test('Matcher - FeaturesMatchingStrategy (BE-24): sin embedding de la propiedad (aunque el pedido sí tenga), no aplica crédito ni rompe', () => {
+  const strategy = new FeaturesMatchingStrategy();
+  const result = strategy.evaluate(
+    baseRequest({ features: ['parrilla'] }),
+    baseProperty({ features: 'Living amplio con balcón al frente', features_embedding: null }),
+    undefined,
+    [1, 0]
+  );
+  assert.strictEqual(result.isMatch, true);
+  assert.ok(!result.reason?.includes('semántic'));
 });

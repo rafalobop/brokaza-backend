@@ -15,20 +15,22 @@ yarn-error.log*
 /catalog.json
 /settings.json
 .baileys_auth/
-.agent/agent_runner.db
+.agent/
 /src/generated/prisma
 .claude/*
 !.claude/skills
 /postman
 .agents/
 skills-lock.json
-
+docs/
+public/
 # Archivos dinámicos de Tenants (Caché, Configuración y Sesiones)
 cache/
 sessions/
 auditoria.md
 MIGRATION_PLAN.md
 RUNBOOK.md
+EVOLUTION_DOCS.md
 
 # Proyectos de video generados con HyperFrames (outputs pesados, no versionar)
 videos/

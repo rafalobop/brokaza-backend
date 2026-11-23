@@ -1,16 +1,40 @@
-import { extractFromTextInput, extractZoneIntent } from './ai';
+import { extractSearchIntent, SearchIntent, ZoneIntentRequest } from '../ai';
 import { findCrossTenantMatches } from './blindMatching';
 import { sendWebPushToTenant, buildIncomingMatchPushPayload, hasActivePushSubscriptions } from './webPush';
 import { sendIncomingMatchEmailFallback } from './notifier-email';
 import { notifyMatchFound } from './notifications';
 import { broadcastMatchCountChanged } from './realtimeHub';
 import { logger } from './logger';
+import { withSpan } from './tracing';
 import {
   buildBlindMatchInsertRows,
   mapPropertyToBlindMatchShape,
   groupMatchesByMatchedTenant,
   SearcherSnapshot
 } from '../utils/blindMatchPersistence';
+import { computeFeaturesEmbeddingLiteral, fromPgVectorLiteral } from './embeddings';
+
+// BE-09: `active_searches.criteria` sigue escribiéndose con las keys VIEJAS (`zones`/`bedrooms`/
+// `key_features`) a propósito, aunque la extracción interna ya use el schema unificado
+// (`location_mentions`/`bedrooms_min`/`features`) — decisión explícita para no romper
+// `brokaza-frontend` (repo separado, lee `criteria` por esos nombres para mostrar "Buscás: depto,
+// 2 dormitorios..."). `zones` pasa a ser la zona YA RESUELTA (`zona_nombres`, el nombre real de
+// `neighborhoods`) cuando la resolución fue exitosa — mejora real sobre el valor anterior (un
+// municipio hardcodeado, ver BE-10) — con fallback a las menciones crudas si no se resolvió nada
+// (zone_status INDEFINIDA/DESCONOCIDA), para que el frontend siga mostrando algo parecido a lo
+// que escribió el usuario en vez de un array vacío.
+function toLegacyCriteriaShape(intent: SearchIntent, zone: ZoneIntentRequest) {
+  return {
+    operation: intent.operation,
+    property_type: intent.property_type,
+    zones: zone.zone_status === 'DEFINIDA' && zone.zona_nombres.length > 0 ? zone.zona_nombres : intent.location_mentions,
+    max_budget: intent.max_budget,
+    currency: intent.currency,
+    bedrooms: intent.bedrooms_min,
+    key_features: intent.features,
+    country: intent.country
+  };
+}
 
 export interface SearchSegmentResult {
   success: boolean;
@@ -22,45 +46,73 @@ export interface SearchSegmentResult {
 }
 
 // Procesa UN segmento de búsqueda ya extraído del mensaje original (ver segmentSearchRequests) a
-// través del pipeline completo: Agente 1 -> Agente 2 (zona) -> insert en active_searches (ya con
-// el estado de zona persistido) -> matching cross-tenant -> persistencia de blind_matches ->
-// notificaciones bidireccionales. Extraído a función propia para poder correrlo una vez por cada
-// sub-búsqueda de un mensaje multi-búsqueda.
+// través del pipeline completo: extracción de intención (BE-09: una sola llamada LLM, antes
+// Agente 1 + Agente 2 en serie) -> insert en active_searches (ya con el estado de zona
+// persistido) -> matching cross-tenant -> persistencia de blind_matches -> notificaciones
+// bidireccionales. Extraído a función propia para poder correrlo una vez por cada sub-búsqueda de
+// un mensaje multi-búsqueda.
 export async function processSingleSearchSegment(
   tenantId: string,
   tenantSupabase: any,
-  segmentText: string
+  segmentText: string,
+  traceId?: string
 ): Promise<SearchSegmentResult> {
-  const extractedData = await extractFromTextInput(segmentText);
+  // asType 'chain': orquesta varios pasos (extracción -> zona -> persistencia -> matching ->
+  // notificación), no es un lookup ni una acción atómica — ver observation-types de Langfuse.
+  return withSpan('process-segment', { tenantId, segmentText }, async () => processSingleSearchSegmentImpl(tenantId, tenantSupabase, segmentText, traceId), { asType: 'chain' });
+}
 
-  if (extractedData.operation === 'desconocido') {
+async function processSingleSearchSegmentImpl(
+  tenantId: string,
+  tenantSupabase: any,
+  segmentText: string,
+  traceId?: string
+): Promise<SearchSegmentResult> {
+  // BE-09: una sola llamada LLM (antes extractFromTextInput + extractZoneIntent en serie) —
+  // resuelve intención y zona en el mismo paso, zone ya viene resuelta contra la base (nunca
+  // lanza por sí sola; un fallo total de IA sí lanza AITimeoutError/AIExtractionFailedError, ver
+  // operations/extractSearchIntent.ts).
+  const { intent, zone: zoneIntent } = await extractSearchIntent(segmentText, tenantId);
+
+  if (intent.operation === 'desconocido') {
     return { success: false, raw_text: segmentText, error: 'No pudimos clasificar el texto como un pedido de propiedad.' };
   }
 
-  // KAN-22 + estados de zona (2026-08-11): zoneIntent (Agente 2) se resuelve ANTES del insert (no
-  // después, como antes de este cambio) para poder persistir zone_status/zone_ids/zone_names/
-  // zone_text_original en el mismo insert — elimina la ventana donde una fila de active_searches
-  // existía sin haber corrido el Agente 2 todavía. extractZoneIntent nunca lanza (fallback
-  // silencioso ante fallo total de IA), así que no necesita try/catch propio.
-  const zoneIntent = await extractZoneIntent(segmentText, extractedData.operation);
+  // BE-23 (EP-07): embedding de las features pedidas, calculado UNA sola vez acá (las búsquedas
+  // son inmutables tras crearse, a diferencia de las propiedades — nunca hace falta recalcularlo
+  // después). Best-effort (ver computeFeaturesEmbeddingLiteral): si falla, la búsqueda se crea
+  // igual sin esa señal de re-rank semántico — nunca bloquea POST /api/search.
+  const featuresEmbedding = await computeFeaturesEmbeddingLiteral(intent.features.join(', '));
 
   const { data: search, error: insertErr } = await tenantSupabase
     .from('active_searches')
     .insert({
       tenant_id: tenantId,
       raw_text: segmentText,
-      criteria: extractedData,
+      criteria: toLegacyCriteriaShape(intent, zoneIntent),
       zone_status: zoneIntent.zone_status,
       zone_ids: zoneIntent.zona_ids,
       zone_names: zoneIntent.zona_nombres,
-      zone_text_original: zoneIntent.texto_ubicacion_original
+      zone_text_original: zoneIntent.texto_ubicacion_original,
+      features_embedding: featuresEmbedding,
+      // BE-03: trace_id de la traza Langfuse/OpenTelemetry de este request — null si tracing no
+      // estaba configurado al momento del insert (ver src/services/tracing.ts).
+      trace_id: traceId ?? null
     })
     .select('id, criteria, zone_status, zone_names, created_at, expires_at')
     .single();
 
   if (insertErr) throw insertErr;
 
-  const matches = await findCrossTenantMatches(tenantId, extractedData, zoneIntent);
+  // BE-24: reutiliza el `number[]` ya calculado arriba (parseado del mismo literal que se acaba
+  // de persistir) — no hace falta una segunda llamada a la API de embeddings para esta misma
+  // búsqueda, `fromPgVectorLiteral` es puro y gratis.
+  const requestFeaturesVector = featuresEmbedding ? fromPgVectorLiteral(featuresEmbedding) : null;
+
+  // asType 'retriever': lookup de solo lectura contra la cartera cross-tenant, no cambia estado.
+  // `intent` (no `search.criteria`, que tiene el shape legacy de persistencia) es lo que entiende
+  // matcher.ts.
+  const matches = await withSpan('retrieve-cross-tenant-matches', { tenantId, searchId: search.id }, () => findCrossTenantMatches(tenantId, intent, zoneIntent, undefined, undefined, requestFeaturesVector), { asType: 'retriever' });
 
   const mappedMatches = matches.map(m => ({
     tenant_id: m.tenant_id,
@@ -126,11 +178,15 @@ export async function processSingleSearchSegment(
 
     for (const [ownerTenantId, ownerMatches] of Object.entries(bySearcherOwner)) {
       const ownerMatchIds = ownerMatches.map((m) => m.id).filter((id): id is string => Boolean(id));
-      notifyMatchFound({
+      // Fire-and-forget (no se awaitea desde el request) — el span 'notify-match-owner' puede
+      // seguir vivo después de que 'process-segment' ya terminó, mismo criterio best-effort que
+      // ya tenía este bloque antes de BE-03 (no afecta la búsqueda, ya confirmada). asType 'tool':
+      // acción con efecto externo (push/email), no un lookup.
+      withSpan('notify-match-owner', { ownerTenantId, searchId: search.id }, () => notifyMatchFound({
         hasActivePush: () => hasActivePushSubscriptions(ownerTenantId),
         sendPush: () => sendWebPushToTenant(ownerTenantId, buildIncomingMatchPushPayload(ownerMatchIds)),
         sendEmailFallback: () => sendIncomingMatchEmailFallback(ownerTenantId, searcherSnapshot, segmentText, ownerMatches)
-      }).catch((notifyErr: any) => {
+      }), { asType: 'tool' }).catch((notifyErr: any) => {
         logger.error({ error: notifyErr.message || notifyErr, tenantId: ownerTenantId, searchId: search.id }, '[BUSQUEDA] Error al notificar al dueño de una propiedad matcheada (no afecta la búsqueda ya confirmada)');
       });
     }

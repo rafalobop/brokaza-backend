@@ -36,9 +36,15 @@ src/
 ├── routes/*Routes.ts      # un router por dominio: auth, profile, upload, catalog, search, matches,
 │                          # notifications, internal — define paths/middleware (auth, rate limit)
 ├── controllers/*Controller.ts  # la lógica de request/response de cada router, en pares 1:1
-├── services/               # lógica de negocio pura: ai.ts (extracción/IA), blindMatching.ts
-│                          # (motor de matching), excel.ts (parseo de cartera), webPush.ts,
-│                          # notifier-email.ts, realtimeHub.ts (WebSocket), searchExpiration.ts, etc.
+├── ai/                     # capa de IA (BE-06): schemas/ (un schema Zod por operación),
+│                          # providers/ (GeminiProvider/OpenAIProvider/FallbackProvider),
+│                          # operations/ (extractFromTextInput, extractZoneIntent,
+│                          # segmentSearchRequests, suggestExcelColumnMapping), prompts.ts,
+│                          # index.ts (único punto de entrada público)
+├── services/               # lógica de negocio pura: blindMatching.ts (motor de matching),
+│                          # excel.ts (parseo de cartera), webPush.ts, notifier-email.ts,
+│                          # realtimeHub.ts (WebSocket), searchExpiration.ts, llmCallsRepository.ts
+│                          # (persistencia de métricas de IA), tracing.ts (Langfuse), etc.
 ├── config/env.ts          # validación fail-fast de variables de entorno al arrancar
 ├── utils/                 # helpers puros (rate limiting, validaciones, whitelist de body, etc.)
 └── types/database.types.ts # tipos generados desde el schema real de Supabase (no se edita a mano)
@@ -162,4 +168,5 @@ del CCIT usado para validar la matrícula).
 - `docs/RUNBOOK.md` — observabilidad y alertas de errores en producción (healthcheck, Sentry).
 - `docs/rate-limit-backends.md` — por qué el rate limiting distribuido usa Postgres y no Redis.
 - `docs/rls-deny-all-tables-README.md` — por qué `licensed_agents` y la familia `neighborhood_*` tienen RLS habilitado sin policies (intencional, solo acceso service-role).
+- `docs/model-selection.md` — comparativa de modelos LLM (accuracy × costo × latencia) y la justificación con datos de por qué `gemini-2.5-flash-lite` es el primario y `gpt-4o-mini` el fallback.
 - `.agent/CONTEXT.md` — memoria viva del proyecto: arquitectura al detalle, historial de decisiones y tracking de tickets. Fuente de verdad más granular que este README.

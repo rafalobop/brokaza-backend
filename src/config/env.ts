@@ -19,6 +19,7 @@ export interface Config {
   resendApiKey: string;
   notificationIntervalMinutes: number;
   freeTextExtractionEnabled: boolean;
+  zoneSemanticFallbackEnabled: boolean;
   searchExpirationIntervalMinutes: number;
   reengagementIntervalMinutes: number;
   aiRequestTimeoutMs: number;
@@ -42,6 +43,14 @@ export interface Config {
   licenseDataStaleHours: number;
   /** KAN-122: nombres de las variables de Supabase que faltan (vacío si están todas presentes). */
   missingSupabaseCredentials: string[];
+  // BE-03: credenciales de Langfuse para el tracing de POST /api/search — opcionales, mismo
+  // patrón que openaiApiKey. Sin ellas, src/services/tracing.ts no registra ningún
+  // TracerProvider y las llamadas a startObservation/startActiveObservation caen al no-op
+  // global de @opentelemetry/api — la app arranca y la búsqueda funciona igual, solo que sin
+  // trazas exportadas.
+  langfusePublicKey?: string;
+  langfuseSecretKey?: string;
+  langfuseBaseUrl: string;
 }
 
 function cleanEnvVar(val: string | undefined): string | undefined {
@@ -65,9 +74,15 @@ export function validateConfig(): Config {
   const notificationIntervalMinutes = parseInt(cleanEnvVar(process.env.NOTIFICATION_INTERVAL_MINUTES) || '20', 10);
   // KAN-36/KAN-38: extracción de texto libre de formulario (matching ciego), consumida por
   // POST /api/search. Habilitada por default desde KAN-38: hace falta
-  // FREE_TEXT_EXTRACTION_ENABLED=false explícito para apagarla. No afecta a
-  // extractFromWhatsApp, que sigue funcionando siempre sin depender de este flag.
+  // FREE_TEXT_EXTRACTION_ENABLED=false explícito para apagarla.
   const freeTextExtractionEnabled = cleanEnvVar(process.env.FREE_TEXT_EXTRACTION_ENABLED) !== 'false';
+  // BE-20 (EP-07): fallback semántico de zonas (embeddings + pgvector, zonesService.ts) cuando el
+  // keyword matching no resuelve ninguna mención. Habilitado por default (es barato — 1 llamada a
+  // embeddings de OpenAI por mención sin resolver, nunca por búsqueda completa) pero con kill
+  // switch explícito, mismo criterio que FREE_TEXT_EXTRACTION_ENABLED: si algo saliera mal con el
+  // proveedor de embeddings o la calidad de los matches en producción, se puede apagar sin un
+  // deploy — degrada a DESCONOCIDA (el comportamiento de antes de este ticket), nunca rompe.
+  const zoneSemanticFallbackEnabled = cleanEnvVar(process.env.ZONE_SEMANTIC_FALLBACK_ENABLED) !== 'false';
   // KAN-41: frecuencia del servicio en segundo plano que marca 'active_searches' vencidas
   // (expires_at < ahora) como 'expired'. Default 60 min: el vencimiento es a 7 días, no hace
   // falta chequear con más frecuencia que una vez por hora.
@@ -160,6 +175,10 @@ export function validateConfig(): Config {
   // 48h da margen a que el job de sincronización (que corre cada `licenseValidationRetryIntervalMinutes`)
   // falle varias corridas seguidas sin que eso se traduzca en rechazos falsos de matrículas válidas.
   const licenseDataStaleHours = parseInt(cleanEnvVar(process.env.LICENSE_DATA_STALE_HOURS) || '48', 10);
+  // BE-03: opcionales — ver comentario de la interfaz Config más arriba.
+  const langfusePublicKey = cleanEnvVar(process.env.LANGFUSE_PUBLIC_KEY);
+  const langfuseSecretKey = cleanEnvVar(process.env.LANGFUSE_SECRET_KEY);
+  const langfuseBaseUrl = cleanEnvVar(process.env.LANGFUSE_BASE_URL) || 'https://cloud.langfuse.com';
 
   // KAN-122: sin SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY la app queda inservible (todo el acceso a
   // datos pasa por el cliente service-role de src/services/supabase.ts) — antes de este ticket
@@ -237,6 +256,7 @@ export function validateConfig(): Config {
     resendApiKey,
     notificationIntervalMinutes,
     freeTextExtractionEnabled,
+    zoneSemanticFallbackEnabled,
     searchExpirationIntervalMinutes,
     reengagementIntervalMinutes,
     aiRequestTimeoutMs,
@@ -258,7 +278,10 @@ export function validateConfig(): Config {
     licensePadronUrl,
     licenseValidationRetryIntervalMinutes,
     licenseDataStaleHours,
-    missingSupabaseCredentials
+    missingSupabaseCredentials,
+    langfusePublicKey,
+    langfuseSecretKey,
+    langfuseBaseUrl
   };
 }
 

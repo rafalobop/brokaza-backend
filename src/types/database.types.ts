@@ -1,8 +1,3 @@
-// KAN-139: generado por Supabase MCP (`generate_typescript_types`) contra el proyecto real
-// `brokaza` (bbadahhljpddlckyrmvi), reflejando el schema real de Postgres al momento de generarlo
-// — no escrito a mano. Regenerar con el mismo comando (o `supabase gen types typescript`) cada vez
-// que cambie el schema (nueva columna/tabla/función) para que no quede desactualizado. No editar
-// a mano.
 export type Json =
   | string
   | number
@@ -24,11 +19,13 @@ export type Database = {
           created_at: string
           criteria: Json
           expires_at: string
+          features_embedding: string | null
           id: string
           raw_text: string
           reengagement_sent: boolean
           status: string
           tenant_id: string
+          trace_id: string | null
           zone_ids: string[]
           zone_names: string[]
           zone_status: string
@@ -38,11 +35,13 @@ export type Database = {
           created_at?: string
           criteria?: Json
           expires_at: string
+          features_embedding?: string | null
           id?: string
           raw_text: string
           reengagement_sent?: boolean
           status?: string
           tenant_id: string
+          trace_id?: string | null
           zone_ids?: string[]
           zone_names?: string[]
           zone_status?: string
@@ -52,11 +51,13 @@ export type Database = {
           created_at?: string
           criteria?: Json
           expires_at?: string
+          features_embedding?: string | null
           id?: string
           raw_text?: string
           reengagement_sent?: boolean
           status?: string
           tenant_id?: string
+          trace_id?: string | null
           zone_ids?: string[]
           zone_names?: string[]
           zone_status?: string
@@ -241,6 +242,69 @@ export type Database = {
         }
         Relationships: []
       }
+      llm_calls: {
+        Row: {
+          cost_usd: number
+          created_at: string
+          fallback_used: boolean
+          id: string
+          latency_ms: number
+          model: string
+          operation: string
+          prompt_version: string | null
+          schema_valid: boolean
+          search_id: string | null
+          tenant_id: string | null
+          tokens_in: number
+          tokens_out: number
+        }
+        Insert: {
+          cost_usd?: number
+          created_at?: string
+          fallback_used?: boolean
+          id?: string
+          latency_ms?: number
+          model: string
+          operation: string
+          prompt_version?: string | null
+          schema_valid?: boolean
+          search_id?: string | null
+          tenant_id?: string | null
+          tokens_in?: number
+          tokens_out?: number
+        }
+        Update: {
+          cost_usd?: number
+          created_at?: string
+          fallback_used?: boolean
+          id?: string
+          latency_ms?: number
+          model?: string
+          operation?: string
+          prompt_version?: string | null
+          schema_valid?: boolean
+          search_id?: string | null
+          tenant_id?: string | null
+          tokens_in?: number
+          tokens_out?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "llm_calls_search_id_fkey"
+            columns: ["search_id"]
+            isOneToOne: false
+            referencedRelation: "active_searches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "llm_calls_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       neighborhood_aliases: {
         Row: {
           alias: string
@@ -292,6 +356,7 @@ export type Database = {
         Row: {
           boundary: unknown
           created_at: string
+          embedding: string | null
           group_id: string | null
           id: string
           name: string
@@ -299,6 +364,7 @@ export type Database = {
         Insert: {
           boundary: unknown
           created_at?: string
+          embedding?: string | null
           group_id?: string | null
           id?: string
           name: string
@@ -306,6 +372,7 @@ export type Database = {
         Update: {
           boundary?: unknown
           created_at?: string
+          embedding?: string | null
           group_id?: string | null
           id?: string
           name?: string
@@ -394,6 +461,7 @@ export type Database = {
           created_at: string
           currency: string
           features: string | null
+          features_embedding: string | null
           floor: string | null
           id: string
           latitude: number | null
@@ -419,6 +487,7 @@ export type Database = {
           created_at?: string
           currency: string
           features?: string | null
+          features_embedding?: string | null
           floor?: string | null
           id?: string
           latitude?: number | null
@@ -444,6 +513,7 @@ export type Database = {
           created_at?: string
           currency?: string
           features?: string | null
+          features_embedding?: string | null
           floor?: string | null
           id?: string
           latitude?: number | null
@@ -900,6 +970,14 @@ export type Database = {
       geomfromewkt: { Args: { "": string }; Returns: unknown }
       gettransactionid: { Args: never; Returns: unknown }
       longtransactionsenabled: { Args: never; Returns: boolean }
+      match_neighborhoods_by_embedding: {
+        Args: { match_count?: number; query_embedding: string }
+        Returns: {
+          id: string
+          name: string
+          similarity: number
+        }[]
+      }
       neighborhood_for_point: {
         Args: { lat: number; lon: number; max_distance_meters?: number }
         Returns: {

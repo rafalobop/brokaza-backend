@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { AITimeoutError } from '../src/services/ai';
+import { AITimeoutError } from '../src/ai';
 
 // KAN-132: no hay harness de supertest/Express en este repo (src/index.ts no exporta `app`, ver
 // tests/errorMessageLeak.test.ts), así que se combina: 1) un test a nivel de código fuente que
@@ -83,7 +83,7 @@ test('KAN-279 (AC1) - createSearch usa Promise.all para procesar los segmentos, 
   const createSearchIdx = controllerSource.indexOf('export async function createSearch');
   assert.ok(createSearchIdx >= 0, 'No se encontró createSearch en src/controllers/searchController.ts — el test quedó desactualizado.');
 
-  const functionBlock = controllerSource.slice(createSearchIdx, createSearchIdx + 3000);
+  const functionBlock = controllerSource.slice(createSearchIdx, createSearchIdx + 4000);
   assert.match(functionBlock, /segmentsToProcess\.map\(/, 'El procesamiento de segmentos debe mapear el array (paralelo), no iterarlo con un for.');
   assert.match(functionBlock, /await Promise\.all\(/, 'El procesamiento de segmentos debe usar Promise.all.');
   assert.doesNotMatch(functionBlock, /for\s*\(\s*const segmentText of segmentsToProcess\s*\)/, 'No debe quedar el loop secuencial "for (const segmentText of segmentsToProcess)".');

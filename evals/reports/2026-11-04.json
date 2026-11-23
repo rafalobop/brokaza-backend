@@ -1,0 +1,63 @@
+{
+  "date": "2026-11-04",
+  "reports": [
+    {
+      "operation": "search-intent",
+      "totalCases": 32,
+      "executedCases": 32,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 1895,
+        "p95": 2453,
+        "meanMs": 2028.125
+      },
+      "metrics": {
+        "operationMatchRate": 0.875,
+        "propertyTypeMatchRate": 0.96875,
+        "currencyMatchRate": 0.875,
+        "countryMatchRate": 0.96875,
+        "bedroomsMinMatchRate": 1,
+        "budgetMeanAbsError": 0,
+        "budgetNullMismatchRate": 0,
+        "locationMentionsPrecision": 0.90625,
+        "locationMentionsRecall": 0.90625,
+        "featuresPrecision": 0.984375,
+        "featuresRecall": 1,
+        "desconocidaRate": 0.0625,
+        "falseDesconocidaRate": 0
+      }
+    },
+    {
+      "operation": "segment",
+      "totalCases": 27,
+      "executedCases": 27,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 1287,
+        "p95": 1595,
+        "meanMs": 1293.7407407407406
+      },
+      "metrics": {
+        "segmentCountMatchRate": 1,
+        "segmentExactMatchRate": 0.6666666666666666
+      }
+    },
+    {
+      "operation": "excel-mapping",
+      "totalCases": 25,
+      "executedCases": 25,
+      "executionErrors": [],
+      "criticalFailure": false,
+      "latency": {
+        "p50": 2965,
+        "p95": 3412,
+        "meanMs": 3081.24
+      },
+      "metrics": {
+        "fieldAccuracy": 0.9709090909090909
+      }
+    }
+  ]
+}

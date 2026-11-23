@@ -10,7 +10,7 @@ import {
   HeuristicMappingResult,
   FieldMatch
 } from '../utils/excelHeaderMatcher';
-import { suggestExcelColumnMapping, ExcelColumnMappingSuggestion } from './ai';
+import { suggestExcelColumnMapping, ExcelColumnMappingSuggestion } from '../ai';
 
 // Contrato explícito user-facing vs. debug (auditoria.md #7): `userFacing: true` marca un mensaje
 // redactado a mano, seguro para devolver tal cual al cliente (ej. validación de negocio). Con
@@ -186,7 +186,7 @@ export async function resolveColumnMapping(
   tenantId: string,
   headers: string[],
   client: SupabaseClient = serviceRoleSupabase,
-  aiSuggestFn: (headers: string[]) => Promise<ExcelColumnMappingSuggestion[]> = suggestExcelColumnMapping
+  aiSuggestFn: (headers: string[], tenantId?: string) => Promise<ExcelColumnMappingSuggestion[]> = suggestExcelColumnMapping
 ): Promise<ColumnMappingResolution> {
   const headerSignature = computeHeaderSignature(headers);
 
@@ -204,7 +204,7 @@ export async function resolveColumnMapping(
 
   let aiFields: ResolvedFieldMapping[] | null = null;
   try {
-    const suggestions = await aiSuggestFn(headers);
+    const suggestions = await aiSuggestFn(headers, tenantId);
     if (suggestions.length > 0) {
       aiFields = resolveAiFields(suggestions, headers);
     }

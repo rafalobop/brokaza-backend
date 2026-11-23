@@ -1,6 +1,7 @@
-import { ExtractedRealEstateRequest, ZoneIntentRequest } from '../services/ai';
+import { SearchIntent, ZoneIntentRequest } from '../ai';
 import { Property } from '../services/excel';
 import { getDolarBlueRate } from '../services/dolar';
+import { cosineSimilarity } from '../services/embeddings';
 
 export interface MatchResult {
   isMatch: boolean;
@@ -17,9 +18,15 @@ export interface MatchingResult {
 export interface IMatchingStrategy {
   name: string;
   evaluate(
-    request: ExtractedRealEstateRequest,
+    request: SearchIntent,
     property: Property,
-    zoneIntent?: ZoneIntentRequest
+    zoneIntent?: ZoneIntentRequest,
+    // BE-24 (EP-07): embedding de `request.features` (ver computeFeaturesEmbeddingLiteral,
+    // calculado una sola vez por búsqueda en searchSegmentProcessor.ts) — solo lo usa
+    // FeaturesMatchingStrategy; el resto de las estrategias lo ignoran, mismo criterio que
+    // `zoneIntent` (parámetro opcional compartido en la interfaz, relevante para una sola
+    // implementación).
+    requestFeaturesEmbedding?: number[] | null
   ): MatchingResult;
 }
 
@@ -59,12 +66,12 @@ export function isPropertyInCountry(property: Property): boolean {
 export class OperationMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Operación';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
-    const operacionRequest = (zoneIntent && zoneIntent.operacion !== 'DESCONOCIDO')
-      ? (zoneIntent.operacion === 'COMPRA' ? 'venta' : 'alquiler')
-      : request.operation;
-
-    if (operacionRequest !== 'desconocido' && operacionRequest !== property.operation) {
+  // BE-09: antes preferia `zoneIntent.operacion` (el enum propio de Agente 2) sobre
+  // `request.operation` (Agente 1) cuando no era DESCONOCIDO — reconciliaba dos opiniones de
+  // DOS llamadas LLM distintas. Con una sola extracción unificada (`SearchIntent`), no hay una
+  // segunda opinión que reconciliar: `request.operation` es la única fuente.
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
+    if (request.operation !== 'desconocido' && request.operation !== property.operation) {
       return { isMatch: false, scoreDeduction: 0, reason: 'Diferente tipo de operación' };
     }
     return { isMatch: true, scoreDeduction: 0 };
@@ -74,7 +81,7 @@ export class OperationMatchingStrategy implements IMatchingStrategy {
 export class PropertyTypeMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Tipo de Propiedad';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
     if (request.property_type !== 'otro' && request.property_type !== property.property_type) {
       return { isMatch: false, scoreDeduction: 0, reason: 'Diferente tipo de propiedad' };
     }
@@ -85,7 +92,7 @@ export class PropertyTypeMatchingStrategy implements IMatchingStrategy {
 export class CountryMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Country';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
     if (request.country && request.country !== 'indiferente') {
       const propInCountry = isPropertyInCountry(property);
       if (request.country === 'si' && !propInCountry) {
@@ -109,12 +116,15 @@ export class CountryMatchingStrategy implements IMatchingStrategy {
 export class ZoneMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Zona';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
-    // 1. Validar por el Agente 2 (Geolocalización Inexacta / Intenciones) si existe. KAN-22: la
-    // zona real (PostGIS + alias, ver zonesService.resolvePropertyZoneId) se resuelve ANTES de
-    // llegar acá — esta estrategia es sync/sin red por diseño (matchRequestAgainstProperties se
-    // testea sin Supabase), así que solo compara el `neighborhood_id` ya estampado en la
-    // property (ver blindMatching.ts#findCrossTenantMatches) contra el/los del pedido.
+  // BE-09: antes, si `zoneIntent` no resolvía nada específico (INDEFINIDA, o ausente), caía a un
+  // "branch 2" que comparaba `request.zones` (barrios YA MAPEADOS a municipio por el prompt
+  // hardcodeado de Agente 1 — ver BE-10) contra `property.zone_display_name` por igualdad exacta
+  // de texto. Ese mapeo hardcodeado desapareció (la extracción unificada solo produce
+  // `location_mentions` crudos, resueltos 100% contra la base) — no queda ningún string
+  // "pre-mapeado" con el que comparar, así que ese fallback se elimina: la zona se resuelve
+  // siempre a través de `zoneIntent` (PostGIS + alias, ver zonesService.resolvePropertyZoneId,
+  // resuelto ANTES de llegar acá — esta estrategia es sync/sin red por diseño).
+  evaluate(request: SearchIntent, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
     if (zoneIntent) {
       // Zona mencionada pero no resuelta tras reintentos: filtro duro. No hay base para decidir
       // si esta propiedad corresponde o no, así que NO matchea (a diferencia de INDEFINIDA, que
@@ -145,21 +155,7 @@ export class ZoneMatchingStrategy implements IMatchingStrategy {
         return { isMatch: true, scoreDeduction: 0, reason: `Coincidencia de Zona Geográfica: ${zonasDisplay}` };
       }
 
-      // zone_status === 'INDEFINIDA' (o DEFINIDA con array vacío, caso defensivo): cae al branch 2.
-    }
-
-    // 2. Zona de Ubicación General (Si no se usó el Agente 2 para geo-filtrado específico)
-    if (request.zones.length > 0) {
-      const zoneMatch = request.zones.some(zonaReq =>
-        zonaReq.toLowerCase() === (property.zone_display_name ?? '').toLowerCase()
-      );
-      if (!zoneMatch) {
-        return {
-          isMatch: false,
-          scoreDeduction: 0,
-          reason: `Zona de la propiedad (${property.zone_display_name ?? ''}) no solicitada en: ${request.zones.join(', ')}`
-        };
-      }
+      // zone_status === 'INDEFINIDA' (o DEFINIDA con array vacío, caso defensivo): sin filtro de zona.
     }
 
     return { isMatch: true, scoreDeduction: 0 };
@@ -169,10 +165,10 @@ export class ZoneMatchingStrategy implements IMatchingStrategy {
 export class BedroomsMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Dormitorios';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
-    const bedroomsRequired = (zoneIntent && zoneIntent.dormitorios_min !== null)
-      ? zoneIntent.dormitorios_min
-      : request.bedrooms;
+  // BE-09: antes preferia `zoneIntent.dormitorios_min` (Agente 2) sobre `request.bedrooms`
+  // (Agente 1) — mismo criterio que OperationMatchingStrategy, ya no hay dos opiniones.
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
+    const bedroomsRequired = request.bedrooms_min;
 
     if (bedroomsRequired !== null) {
       if (property.bedrooms < bedroomsRequired) {
@@ -197,7 +193,7 @@ export class BedroomsMatchingStrategy implements IMatchingStrategy {
 export class BudgetMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Presupuesto';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property): MatchingResult {
+  evaluate(request: SearchIntent, property: Property): MatchingResult {
     // KAN-72: price <= 0 es dato faltante (celda vacía o precio no parseable en el Excel, ver
     // processExcelBuffer), no un precio real de $0. Tratarlo como "sin datos de precio para
     // comparar" en vez de dejar que la propiedad se salte el filtro de presupuesto sin dejar
@@ -254,14 +250,27 @@ export class BudgetMatchingStrategy implements IMatchingStrategy {
   }
 }
 
+// BE-24 (EP-07): umbral de similitud para el crédito semántico de características. A diferencia
+// de SEMANTIC_MATCH_MIN_SIMILARITY en zonesService.ts (que decide si UNA mención resuelve a UNA
+// zona puntual), acá no hay un embedding por característica individual — solo UNO para el
+// conjunto completo pedido (`request.features.join(', ')`) y UNO para el texto completo de
+// `property.features`. Es una señal más gruesa ("esta propiedad en su conjunto describe algo
+// semánticamente parecido a lo pedido"), nunca "esta característica puntual matchea" — por eso
+// nunca elimina la deducción por faltantes del todo, solo la atenúa (ver más abajo).
+export const SEMANTIC_FEATURES_MIN_SIMILARITY = 0.5;
+
 export class FeaturesMatchingStrategy implements IMatchingStrategy {
   readonly name = 'Filtro de Características';
 
-  evaluate(request: ExtractedRealEstateRequest, property: Property, zoneIntent?: ZoneIntentRequest): MatchingResult {
-    const requiredFeatures = Array.from(new Set([
-      ...request.key_features,
-      ...(zoneIntent?.caracteristicas_claves || [])
-    ]));
+  // BE-09: antes UNÍA `request.key_features` (Agente 1) con `zoneIntent.caracteristicas_claves`
+  // (Agente 2) — con una sola extracción, `request.features` ya es el conjunto completo.
+  evaluate(
+    request: SearchIntent,
+    property: Property,
+    _zoneIntent?: ZoneIntentRequest,
+    requestFeaturesEmbedding?: number[] | null
+  ): MatchingResult {
+    const requiredFeatures = Array.from(new Set(request.features));
 
     if (requiredFeatures.length > 0 && property.features) {
       const descLower = (property.features ?? '').toLowerCase();
@@ -305,7 +314,27 @@ export class FeaturesMatchingStrategy implements IMatchingStrategy {
 
       if (missingFeatures.length > 0) {
         reasons.push(`Características faltantes: ${missingFeatures.join(', ')}`);
-        scoreDeduction += (missingFeatures.length * 5);
+        let missingDeduction = missingFeatures.length * 5;
+
+        // BE-24 (EP-07): crédito semántico — la propiedad puede describir alguna de las
+        // características "faltantes" con otras palabras, sin compartir texto con ningún sinónimo
+        // hardcodeado de arriba (ej. verificado con embeddings reales: "espacio para guardar el
+        // auto" vs. "cochera cubierta" da 0.55 de similitud, por encima del umbral). Nunca anula
+        // la deducción del todo (no sabemos CUÁL característica faltante es la que matchea
+        // semánticamente, el embedding es del conjunto completo) — solo la atenúa a la mitad.
+        // Límite real, verificado y no escondido: no toda paráfrasis cruza el umbral — "lugar para
+        // hacer asados" vs. "cuenta con parrilla" da solo 0.35, por debajo de 0.5 (mismo tipo de
+        // límite ya documentado para el fallback de zonas, ver SEMANTIC_MATCH_MIN_SIMILARITY en
+        // zonesService.ts).
+        if (requestFeaturesEmbedding && property.features_embedding) {
+          const similarity = cosineSimilarity(requestFeaturesEmbedding, property.features_embedding);
+          if (similarity >= SEMANTIC_FEATURES_MIN_SIMILARITY) {
+            missingDeduction = Math.round(missingDeduction / 2);
+            reasons.push(`Posible coincidencia semántica en características no detectadas por palabra clave (similitud ${(similarity * 100).toFixed(0)}%)`);
+          }
+        }
+
+        scoreDeduction += missingDeduction;
       }
 
       return {
@@ -334,15 +363,16 @@ const matchingStrategies: IMatchingStrategy[] = [
  * Compara un pedido de cliente con una propiedad de la cartera
  */
 export function checkMatch(
-  request: ExtractedRealEstateRequest,
+  request: SearchIntent,
   property: Property,
-  zoneIntent?: ZoneIntentRequest
+  zoneIntent?: ZoneIntentRequest,
+  requestFeaturesEmbedding?: number[] | null
 ): MatchResult {
   const reasons: string[] = [];
   let score = 100;
 
   for (const strategy of matchingStrategies) {
-    const result = strategy.evaluate(request, property, zoneIntent);
+    const result = strategy.evaluate(request, property, zoneIntent, requestFeaturesEmbedding);
 
     if (!result.isMatch) {
       return {
