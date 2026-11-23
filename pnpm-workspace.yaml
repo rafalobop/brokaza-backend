@@ -1,6 +1,5 @@
 packages:
   - '.'
-  - 'langgraph-tools'
 allowBuilds:
   '@google/genai': true
   '@whiskeysockets/baileys': true
