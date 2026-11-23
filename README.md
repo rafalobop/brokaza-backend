@@ -1,5 +1,87 @@
 # Brokaza — Backend
 
+> Multi-tenant API for blind property matching between real estate agencies — Node.js, TypeScript, Express, Supabase, LLM intent extraction.
+
+## Overview
+
+**Brokaza** is a multi-tenant backend that lets real estate agencies list their own property
+inventory and publish search requests in natural language. An LLM-powered pipeline extracts
+structured intent from that free text and matches it — *blindly* — against every other agency's
+portfolio: each tenant only ever sees its own catalog, and a match surfaces as a targeted
+notification rather than exposing a competitor's full inventory. This lets competing agencies
+collaborate on deals without giving up their book of business.
+
+### Key features
+
+- **Blind cross-tenant matching engine** — 7-strategy scored pipeline (operation, property type, country, zone, bedrooms, budget, features) with short-circuit on hard disqualifiers
+- **LLM-based intent extraction** from free-text search requests (Google Gemini primary, OpenAI automatic fallback), with Zod-validated structured output and prompt-injection hardening
+- **Semantic fallback matching** via `pgvector` embeddings — resolves colloquial zone references and loosely-worded property features that exact/keyword matching misses
+- **Multi-tenancy enforced at the database layer** — Postgres Row-Level Security scoped per request, not just application-level checks
+- **Passwordless auth** (Supabase magic links) with an agency owner/collaborator role model and a dedicated admin panel API
+- **LLM observability** — per-call cost/latency tracking, Langfuse tracing, and a structured eval suite (accuracy × cost × latency per model) used to justify model selection with real data
+- **650+ automated tests** (Node's native test runner), enforced on every PR via CI
+
+### Tech stack
+
+Node.js · TypeScript (strict) · Express 5 · Supabase (Postgres, Auth, Realtime) · Google Gemini & OpenAI · pgvector · Resend · Web Push (VAPID) · Langfuse
+
+**Frontend:** [github.com/rafalobop/brokaza-frontend](https://github.com/rafalobop/brokaza-frontend)
+
+### Architecture
+
+```mermaid
+flowchart LR
+    FE["Next.js Frontend\n(brokaza-frontend)"]
+
+    subgraph BE["Express API — this repo"]
+        API["REST API\n/api/*, /internal/*"]
+        AI["LLM Intent Extraction\nGemini → OpenAI fallback"]
+        MATCH["Blind Matching Engine\n7-strategy scorer"]
+        WS["WebSocket Hub"]
+        PUSH["Web Push (VAPID)"]
+    end
+
+    subgraph SB["Supabase"]
+        AUTH["Auth\nmagic link"]
+        DB[("Postgres\nRLS per tenant")]
+        VEC[("pgvector\nsemantic fallback")]
+    end
+
+    FE -- "HTTPS, same-origin proxy" --> API
+    FE <-. "WebSocket /ws" .-> WS
+    API --> AI
+    AI -- "structured intent" --> MATCH
+    MATCH -- "tenant-scoped queries" --> DB
+    MATCH -- "embeddings" --> VEC
+    API -- "magic link" --> AUTH
+    MATCH -- "new match" --> WS
+    MATCH -- "notification" --> PUSH
+    WS -- "live update" --> FE
+```
+
+### Key design decisions
+
+- **Matching is "blind" by design.** A tenant only ever sees *matches*, never another agency's inventory — the matching engine reads across tenants with the service-role client and an explicit `tenant_id` exclusion, but no tenant-facing endpoint ever exposes another agency's catalog. This lets competing agencies collaborate on deals without giving up their book of business.
+- **Multi-tenancy is enforced with Postgres RLS, not application code.** Every tenant-scoped request carries the user's own Supabase JWT (`getTenantClient`), so row-level security — not a `WHERE tenant_id = ?` a developer might forget — is the actual isolation boundary. Background jobs with no user session are the deliberate exception, using the service-role client.
+- **Gemini primary, OpenAI automatic fallback — chosen from real data, not a guess.** An eval suite (`evals/`, `docs/model-selection.md`) measures accuracy × cost × latency per model on real search requests; Gemini wins on cost/speed for this workload, OpenAI's Structured Outputs give a reliable fallback when Gemini's quota or a transient error cuts in.
+- **Rate limiting lives in Postgres, not Redis.** The stack already has zero infra beyond Supabase; a `rate_limit_check` RPC backed by Postgres avoids standing up a separate service just for request counters at this scale (trade-off documented in `docs/rate-limit-backends.md`).
+
+### Note on ticket references
+
+Commit messages and `.agent/CONTEXT.md` reference ticket IDs like `KAN-xxx`. These come
+from a self-built LangGraph multi-agent tool (PO/PM/Tech Lead/QA simulated debate) used to
+plan and track work on this solo project — not an external Jira instance. The tool itself
+lives in a separate, gitignored workspace (`langgraph-tools/`) and isn't part of the
+deployed app.
+
+---
+
+*The sections below are written in Spanish, this project's original development language (built for the real estate market in Tucumán, Argentina).*
+
+---
+
+## Descripción (ES)
+
 API de Brokaza: matching ciego de propiedades entre inmobiliarias (Tucumán, Argentina). Cada tenant
 (agente/inmobiliaria) carga su cartera de propiedades vía Excel y publica búsquedas en texto libre;
 el backend extrae la intención con IA (Gemini, con fallback a OpenAI) y cruza esa búsqueda contra la
